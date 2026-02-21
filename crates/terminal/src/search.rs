@@ -87,15 +87,22 @@ impl SearchState {
             let line_lower = line_text.to_lowercase();
 
             // Find all non-overlapping occurrences.
-            let mut search_start = 0;
+            // Note: `find()` returns byte offsets, but `start_col`/`end_col`
+            // represent column (character) positions since each terminal cell
+            // holds exactly one character. We must convert byte offsets to
+            // character counts for correct results with multi-byte UTF-8.
+            let query_char_len = query_lower.chars().count();
+            let mut search_start = 0; // byte offset for slicing
             while let Some(pos) = line_lower[search_start..].find(&query_lower) {
-                let abs_pos = search_start + pos;
+                let abs_byte_pos = search_start + pos;
+                let start_col = line_lower[..abs_byte_pos].chars().count();
+                let end_col = start_col + query_char_len;
                 self.matches.push(SearchMatch {
                     line: line_idx,
-                    start_col: abs_pos,
-                    end_col: abs_pos + query.len(),
+                    start_col,
+                    end_col,
                 });
-                search_start = abs_pos + query.len();
+                search_start = abs_byte_pos + query_lower.len();
             }
 
             line_idx += 1;
@@ -305,5 +312,30 @@ mod tests {
         assert!(state.query.is_empty());
         assert!(state.matches.is_empty());
         assert!(state.current_match.is_none());
+    }
+
+    #[test]
+    fn unicode_search_query() {
+        // Each Unicode char occupies one terminal cell.
+        // "héllo" has 'é' as a multi-byte UTF-8 char.
+        let term = make_term(80, 24, "héllo".as_bytes());
+        let mut state = SearchState::new();
+        let matches = state.search(&term, "éllo");
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].start_col, 1); // 'é' starts at column 1
+        assert_eq!(matches[0].end_col, 5); // 4 chars: é, l, l, o
+    }
+
+    #[test]
+    fn ascii_search_regression() {
+        // Verify that ASCII search still works after the byte-offset fix.
+        let term = make_term(80, 24, b"hello world hello");
+        let mut state = SearchState::new();
+        let matches = state.search(&term, "hello");
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].start_col, 0);
+        assert_eq!(matches[0].end_col, 5);
+        assert_eq!(matches[1].start_col, 12);
+        assert_eq!(matches[1].end_col, 17);
     }
 }
