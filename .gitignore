@@ -1,0 +1,7 @@
+/target
+**/*.pdb
+*.exe
+!tmux.exe
+.env
+*.log
+.claude/settings.local.json

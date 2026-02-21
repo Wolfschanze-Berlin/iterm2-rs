@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/iterm2-rs",
+    "crates/terminal",
+    "crates/renderer",
+    "crates/tmux",
+]
+
+[workspace.dependencies]
+# VT parsing
+vte = "0.15"
+
+# Terminal emulation
+alacritty_terminal = "0.25"
+
+# PTY management (Windows ConPTY)
+portable-pty = "0.9"
+
+# Window management
+winit = "0.30"
+
+# GPU rendering
+wgpu = "28"
+
+# Text rendering
+glyphon = "0.10"
+cosmic-text = "0.14"
+
+# Config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Clipboard
+arboard = "3"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Async runtime (blocking on wgpu async init)
+pollster = "0.4"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"

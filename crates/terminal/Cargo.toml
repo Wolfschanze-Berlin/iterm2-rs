@@ -1,0 +1,13 @@
+[package]
+name = "terminal"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+vte.workspace = true
+alacritty_terminal.workspace = true
+portable-pty.workspace = true
+anyhow.workspace = true
+log.workspace = true
+thiserror.workspace = true
+winit.workspace = true
