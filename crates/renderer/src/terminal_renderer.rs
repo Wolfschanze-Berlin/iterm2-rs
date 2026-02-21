@@ -343,4 +343,85 @@ mod tests {
         assert_eq!(CursorShape::Hidden, CursorShape::Hidden);
         assert_ne!(CursorShape::Block, CursorShape::Hidden);
     }
+
+    // -- extract_grid / extract_grid_text tests (#69) -------------------------
+
+    #[test]
+    fn extract_grid_empty_terminal_has_space_cells() {
+        let backend = AlacrittyBackend::new(10, 3);
+        let grid = extract_grid(&backend);
+
+        assert_eq!(grid.styled_lines.len(), 3);
+        for row in &grid.styled_lines {
+            assert_eq!(row.len(), 10);
+            for cell in row {
+                assert_eq!(cell.c, ' ');
+            }
+        }
+    }
+
+    #[test]
+    fn extract_grid_text_empty_terminal_returns_empty_strings() {
+        let backend = AlacrittyBackend::new(10, 3);
+        let lines = extract_grid_text(&backend);
+
+        assert_eq!(lines.len(), 3);
+        for line in &lines {
+            assert!(line.is_empty(), "Expected empty string, got: {:?}", line);
+        }
+    }
+
+    #[test]
+    fn extract_grid_after_simple_text() {
+        let mut backend = AlacrittyBackend::new(20, 3);
+        backend.process_bytes(b"hello");
+
+        let grid = extract_grid(&backend);
+        let first_row = &grid.styled_lines[0];
+        let text: String = first_row.iter().take(5).map(|c| c.c).collect();
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn extract_grid_text_trims_trailing_spaces() {
+        let mut backend = AlacrittyBackend::new(20, 3);
+        backend.process_bytes(b"hi");
+
+        let lines = extract_grid_text(&backend);
+        assert_eq!(lines[0], "hi");
+    }
+
+    #[test]
+    fn extract_grid_control_chars_do_not_advance_cursor() {
+        let mut backend = AlacrittyBackend::new(20, 3);
+        // Control chars like SOH (\x01) are consumed by the VT parser without
+        // advancing the cursor. So 'b' ends up at column 1, not column 2.
+        backend.process_bytes(b"a\x01b");
+
+        let grid = extract_grid(&backend);
+        let first_row = &grid.styled_lines[0];
+        assert_eq!(first_row[0].c, 'a');
+        assert_eq!(first_row[1].c, 'b');
+    }
+
+    #[test]
+    fn extract_grid_has_cursor_info() {
+        let backend = AlacrittyBackend::new(10, 3);
+        let grid = extract_grid(&backend);
+
+        // Fresh terminal should have a cursor at (0, 0).
+        assert!(grid.cursor.is_some());
+        let cursor = grid.cursor.unwrap();
+        assert_eq!(cursor.line, 0);
+        assert_eq!(cursor.col, 0);
+    }
+
+    #[test]
+    fn extract_grid_bg_rects_empty_for_default_bg() {
+        let backend = AlacrittyBackend::new(10, 3);
+        let grid = extract_grid(&backend);
+
+        // No colored backgrounds on a fresh terminal.
+        assert!(grid.bg_rects.is_empty());
+    }
 }

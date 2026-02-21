@@ -75,6 +75,10 @@ pub struct RendererConfig {
     pub window_height: u32,
     /// Window opacity (0.0 = fully transparent, 1.0 = opaque).
     pub opacity: f32,
+    /// Default terminal columns.
+    pub default_cols: u16,
+    /// Default terminal rows.
+    pub default_rows: u16,
 }
 
 impl Default for RendererConfig {
@@ -90,6 +94,8 @@ impl Default for RendererConfig {
             window_width: 800,
             window_height: 600,
             opacity: 1.0,
+            default_cols: 80,
+            default_rows: 24,
         }
     }
 }

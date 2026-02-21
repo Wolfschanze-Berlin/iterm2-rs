@@ -37,5 +37,7 @@ fn build_renderer_config(config: &config::Config) -> RendererConfig {
         window_width: config.window.width,
         window_height: config.window.height,
         opacity: config.window.opacity,
+        default_cols: config.terminal.cols,
+        default_rows: config.terminal.rows,
     }
 }

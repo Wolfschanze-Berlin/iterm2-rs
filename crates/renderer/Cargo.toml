@@ -14,4 +14,9 @@ log.workspace = true
 thiserror.workspace = true
 bytemuck.workspace = true
 alacritty_terminal.workspace = true
+muda.workspace = true
+arboard.workspace = true
 terminal = { path = "../terminal" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_UI_WindowsAndMessaging"] }

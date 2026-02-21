@@ -279,6 +279,21 @@ impl PaneLayout {
         &self.root
     }
 
+    /// Get a mutable reference to the root node.
+    pub fn root_mut(&mut self) -> &mut PaneNode {
+        &mut self.root
+    }
+
+    /// Focus a specific pane by its ID. Returns true if the pane exists.
+    pub fn focus_pane(&mut self, id: usize) -> bool {
+        if self.root.find_leaf(id).is_some() {
+            self.active_pane_id = id;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get the active pane ID.
     pub fn active_pane_id(&self) -> usize {
         self.active_pane_id

@@ -6,7 +6,21 @@ use glyphon::{
     TextBounds, TextRenderer as GlyphonRenderer, Viewport,
 };
 
+use glyphon::cosmic_text::Family;
+
 use crate::config::RgbColor;
+
+/// Resolve a font family name string to a `cosmic_text::Family`.
+fn resolve_family(name: &str) -> Family<'_> {
+    match name {
+        "" | "monospace" => Family::Monospace,
+        "serif" => Family::Serif,
+        "sans-serif" => Family::SansSerif,
+        "cursive" => Family::Cursive,
+        "fantasy" => Family::Fantasy,
+        name => Family::Name(name),
+    }
+}
 
 /// Wraps glyphon's text rendering pipeline.
 pub struct TextRenderer {
@@ -21,6 +35,7 @@ pub struct TextRenderer {
     font_size: f32,
     line_height: f32,
     fg_color: RgbColor,
+    font_family: String,
 }
 
 impl TextRenderer {
@@ -31,6 +46,7 @@ impl TextRenderer {
         surface_format: wgpu::TextureFormat,
         font_size: f32,
         fg_color: RgbColor,
+        font_family: String,
     ) -> Self {
         let mut font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
@@ -59,14 +75,16 @@ impl TextRenderer {
             font_size,
             line_height,
             fg_color,
+            font_family,
         }
     }
 
     /// Set the text content to display.
     pub fn set_text(&mut self, text: &str, width: f32, height: f32) {
-        use glyphon::cosmic_text::{Attrs, Family, Shaping};
+        use glyphon::cosmic_text::{Attrs, Shaping};
 
-        let attrs = Attrs::new().family(Family::Monospace);
+        let family_name = self.font_family.clone();
+        let attrs = Attrs::new().family(resolve_family(&family_name));
         self.buffer
             .set_text(&mut self.font_system, text, &attrs, Shaping::Advanced, None);
         self.buffer
@@ -81,18 +99,22 @@ impl TextRenderer {
     }
 
     /// Prepare text for rendering. Must be called each frame before render().
+    ///
+    /// `y_offset` shifts the text area down by the given number of pixels
+    /// (used to position terminal text below the tab bar).
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         width: u32,
         height: u32,
+        y_offset: f32,
     ) -> Result<()> {
         let (r, g, b) = self.fg_color.to_rgb_u8();
         let text_area = TextArea {
             buffer: &self.buffer,
             left: 4.0,
-            top: 4.0,
+            top: 4.0 + y_offset,
             scale: 1.0,
             bounds: TextBounds {
                 left: 0,
@@ -144,14 +166,15 @@ impl TextRenderer {
     ///
     /// Uses the font system to measure 'M' width. Falls back to 0.6 * font_size.
     pub fn char_width(&mut self) -> f32 {
-        use glyphon::cosmic_text::{Attrs, Family, Shaping};
+        use glyphon::cosmic_text::{Attrs, Shaping};
 
+        let family_name = self.font_family.clone();
         // Measure by setting a single character and reading the layout.
         let mut measure_buf = Buffer::new(
             &mut self.font_system,
             Metrics::new(self.font_size, self.line_height),
         );
-        let attrs = Attrs::new().family(Family::Monospace);
+        let attrs = Attrs::new().family(resolve_family(&family_name));
         measure_buf.set_text(
             &mut self.font_system,
             "M",
@@ -173,6 +196,38 @@ impl TextRenderer {
         self.font_size * 0.6
     }
 
+    /// Set text content from colored spans (for tab bar, status bar, etc.).
+    ///
+    /// Each span is `(text, color)`. All spans are placed on a single line
+    /// using the configured monospace font.
+    pub fn set_colored_spans(&mut self, spans: &[(String, glyphon::Color)], width: f32, height: f32) {
+        use glyphon::cosmic_text::{Attrs, Shaping};
+
+        let family_name = self.font_family.clone();
+        let default_attrs = Attrs::new().family(resolve_family(&family_name));
+
+        let rich_spans: Vec<(&str, Attrs<'_>)> = spans
+            .iter()
+            .map(|(text, color)| {
+                let attrs = Attrs::new()
+                    .family(resolve_family(&family_name))
+                    .color(*color);
+                (text.as_str(), attrs)
+            })
+            .collect();
+
+        self.buffer.set_rich_text(
+            &mut self.font_system,
+            rich_spans,
+            &default_attrs,
+            Shaping::Advanced,
+            None,
+        );
+        self.buffer
+            .set_size(&mut self.font_system, Some(width), Some(height));
+        self.buffer.shape_until_scroll(&mut self.font_system, false);
+    }
+
     /// Set text content from terminal grid lines.
     /// Each line is a string of characters for that terminal row.
     pub fn set_lines(&mut self, lines: &[String], width: f32, height: f32) {
@@ -192,7 +247,9 @@ impl TextRenderer {
         width: f32,
         height: f32,
     ) {
-        use glyphon::cosmic_text::{Attrs, Family, Shaping, Style, Weight};
+        use glyphon::cosmic_text::{Attrs, Shaping, Style, Weight};
+
+        let family_name = self.font_family.clone();
 
         // Build owned spans: Vec<(String, color, bold, italic)>.
         // We merge runs of identical color+attributes within each row, and
@@ -253,12 +310,12 @@ impl TextRenderer {
             }
         }
 
-        let default_attrs = Attrs::new().family(Family::Monospace);
+        let default_attrs = Attrs::new().family(resolve_family(&family_name));
 
         let rich_spans: Vec<(&str, Attrs<'_>)> = spans
             .iter()
             .map(|(text, color, bold, italic)| {
-                let mut attrs = Attrs::new().family(Family::Monospace).color(*color);
+                let mut attrs = Attrs::new().family(resolve_family(&family_name)).color(*color);
                 if *bold {
                     attrs = attrs.weight(Weight::BOLD);
                 }

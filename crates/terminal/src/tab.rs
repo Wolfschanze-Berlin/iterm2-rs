@@ -1,14 +1,148 @@
-//! Tab management: each tab owns an AlacrittyBackend + PtyHandle pair.
+//! Tab management: each tab owns a PaneLayout (binary tree of terminals).
 
+use crate::pane::{PaneLayout, PaneNode, PaneRect, SplitDirection};
 use crate::AlacrittyBackend;
 use crate::PtyHandle;
 
-/// Represents a single terminal tab with its own backend and PTY.
+/// Represents a single terminal tab backed by a pane layout.
+///
+/// Each tab owns a `PaneLayout` tree. The active pane's backend and PTY are
+/// accessible through convenience accessors to keep the window-layer code
+/// simple when only a single pane is in use.
 pub struct Tab {
     pub id: usize,
     pub title: String,
-    pub backend: AlacrittyBackend,
-    pub pty: PtyHandle,
+    pub panes: PaneLayout,
+}
+
+impl Tab {
+    /// Get the active pane's backend (immutable).
+    pub fn active_backend(&self) -> Option<&AlacrittyBackend> {
+        match self.panes.active_pane()? {
+            PaneNode::Leaf { backend, .. } => Some(backend),
+            _ => None,
+        }
+    }
+
+    /// Get the active pane's backend (mutable).
+    pub fn active_backend_mut(&mut self) -> Option<&mut AlacrittyBackend> {
+        match self.panes.active_pane_mut()? {
+            PaneNode::Leaf { backend, .. } => Some(backend),
+            _ => None,
+        }
+    }
+
+    /// Get the active pane's PTY (immutable).
+    pub fn active_pty(&self) -> Option<&PtyHandle> {
+        match self.panes.active_pane()? {
+            PaneNode::Leaf { pty, .. } => Some(pty),
+            _ => None,
+        }
+    }
+
+    /// Get the active pane's PTY (mutable).
+    pub fn active_pty_mut(&mut self) -> Option<&mut PtyHandle> {
+        match self.panes.active_pane_mut()? {
+            PaneNode::Leaf { pty, .. } => Some(pty),
+            _ => None,
+        }
+    }
+
+    /// Convenience: get both backend and pty for the active pane.
+    pub fn active_backend_and_pty_mut(
+        &mut self,
+    ) -> Option<(&mut AlacrittyBackend, &mut PtyHandle)> {
+        match self.panes.active_pane_mut()? {
+            PaneNode::Leaf {
+                backend, pty, ..
+            } => Some((backend, pty)),
+            _ => None,
+        }
+    }
+
+    /// Calculate pane rectangles for the given viewport dimensions.
+    pub fn pane_rects(&self, width: f32, height: f32) -> Vec<PaneRect> {
+        self.panes.calculate_rects(width, height)
+    }
+
+    /// Visit each leaf pane with a callback.
+    pub fn for_each_pane<F>(&self, mut f: F)
+    where
+        F: FnMut(usize, &AlacrittyBackend, &PtyHandle),
+    {
+        visit_leaves(self.panes.root(), &mut f);
+    }
+
+    /// Visit each leaf pane mutably with a callback.
+    pub fn for_each_pane_mut<F>(&mut self, mut f: F)
+    where
+        F: FnMut(usize, &mut AlacrittyBackend, &mut PtyHandle),
+    {
+        visit_leaves_mut(self.panes.root_mut(), &mut f);
+    }
+
+    /// Split the active pane.
+    pub fn split(
+        &mut self,
+        direction: SplitDirection,
+        cols: u16,
+        rows: u16,
+    ) -> anyhow::Result<usize> {
+        self.panes.split(direction, cols, rows)
+    }
+
+    /// Close the active pane. Returns false if it was the last pane.
+    pub fn close_active_pane(&mut self) -> bool {
+        self.panes.close_active()
+    }
+
+    /// Number of panes in this tab.
+    pub fn pane_count(&self) -> usize {
+        self.panes.pane_count()
+    }
+
+    /// Cycle focus to the next pane.
+    pub fn focus_next_pane(&mut self) {
+        self.panes.focus_next();
+    }
+
+    /// Cycle focus to the previous pane.
+    pub fn focus_prev_pane(&mut self) {
+        self.panes.focus_prev();
+    }
+
+    /// Focus a specific pane by ID. Returns true if it exists.
+    pub fn focus_pane(&mut self, id: usize) -> bool {
+        self.panes.focus_pane(id)
+    }
+}
+
+/// Recursively visit all leaf nodes (immutable).
+fn visit_leaves<F>(node: &PaneNode, f: &mut F)
+where
+    F: FnMut(usize, &AlacrittyBackend, &PtyHandle),
+{
+    match node {
+        PaneNode::Leaf { id, backend, pty } => f(*id, backend, pty),
+        PaneNode::Split { first, second, .. } => {
+            visit_leaves(first, f);
+            visit_leaves(second, f);
+        }
+    }
+}
+
+/// Recursively visit all leaf nodes (mutable).
+fn visit_leaves_mut<F>(node: &mut PaneNode, f: &mut F)
+where
+    F: FnMut(usize, &mut AlacrittyBackend, &mut PtyHandle),
+{
+    match node {
+        PaneNode::Leaf { id, backend, pty } => f(*id, backend, pty),
+        PaneNode::Split { first, second, .. } => {
+            visit_leaves_mut(first, f);
+            visit_leaves_mut(second, f);
+        }
+    }
 }
 
 /// Manages multiple tabs with one active tab at a time.
@@ -33,16 +167,10 @@ impl TabManager {
         let id = self.next_id;
         self.next_id += 1;
 
-        let backend = AlacrittyBackend::new(cols, rows);
-        let pty = PtyHandle::spawn(cols, rows)?;
+        let panes = PaneLayout::new(cols, rows)?;
         let title = format!("Tab {}", id + 1);
 
-        let tab = Tab {
-            id,
-            title,
-            backend,
-            pty,
-        };
+        let tab = Tab { id, title, panes };
 
         self.tabs.push(tab);
         // Switch to the newly created tab.

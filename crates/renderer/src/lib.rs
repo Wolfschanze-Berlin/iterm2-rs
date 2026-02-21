@@ -3,12 +3,14 @@
 
 pub mod config;
 pub mod gpu;
+pub mod menu;
 pub mod terminal_renderer;
 pub mod text;
 pub mod window;
 
 pub use config::{RendererConfig, RgbColor};
 pub use gpu::{GpuState, RenderError};
+pub use menu::{AppEvent, AppMenu, MenuAction};
 pub use terminal_renderer::{CursorInfo, CursorShape};
 pub use text::TextRenderer;
 pub use window::App;
