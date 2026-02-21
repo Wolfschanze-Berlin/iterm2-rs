@@ -1,0 +1,16 @@
+# ── Linker ────────────────────────────────────────────────────────
+# Default MSVC link.exe — works in all terminals without needing the VS
+# Developer environment explicitly loaded. rust-lld is faster but breaks
+# when the LIB env var (Windows SDK paths) is not set.
+# To use lld: open a VS Developer terminal and set linker = "rust-lld"
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+
+# ── Build parallelism ────────────────────────────────────────────
+[build]
+jobs = 16                 # match logical CPU count (16 cores)
+rustc-wrapper = "sccache" # Use sccache for compilation caching
+
+# ── Compilation cache ────────────────────────────────────────────
+# sccache caches compiled crates across builds — massive speedup on clean builds
+# Cache env vars set globally in ~/.bashrc
