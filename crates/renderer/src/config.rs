@@ -36,12 +36,24 @@ impl RgbColor {
         })
     }
 
+    /// Convert a single sRGB component to linear space.
+    fn srgb_to_linear(c: f64) -> f64 {
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
     /// Convert to a `wgpu::Color` with alpha 1.0.
+    ///
+    /// The color is converted from sRGB to linear space so that it renders
+    /// correctly when used as a clear color on an sRGB surface.
     pub fn to_wgpu_color(self) -> wgpu::Color {
         wgpu::Color {
-            r: self.r,
-            g: self.g,
-            b: self.b,
+            r: Self::srgb_to_linear(self.r),
+            g: Self::srgb_to_linear(self.g),
+            b: Self::srgb_to_linear(self.b),
             a: 1.0,
         }
     }

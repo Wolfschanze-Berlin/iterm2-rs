@@ -213,8 +213,18 @@ pub fn extract_grid(backend: &AlacrittyBackend) -> GridContent {
         if viewport_line >= 0 && (viewport_line as usize) < rows && col < cols {
             let li = viewport_line as usize;
             let c = indexed.cell.c;
-            let (r, g, b) = resolve_color(&indexed.cell.fg);
             let flags = indexed.cell.flags;
+
+            // Resolve fg/bg, handling INVERSE flag (swap fg/bg).
+            let (mut fg, mut bg_color) = (
+                resolve_color(&indexed.cell.fg),
+                resolve_color(&indexed.cell.bg),
+            );
+            if flags.contains(CellFlags::INVERSE) {
+                std::mem::swap(&mut fg, &mut bg_color);
+            }
+
+            let (r, g, b) = fg;
 
             if !c.is_control() && c != '\0' {
                 styled_lines[li][col] = StyledCell {
@@ -227,9 +237,15 @@ pub fn extract_grid(backend: &AlacrittyBackend) -> GridContent {
                 };
             }
 
-            // Collect background color if non-default.
-            if !is_default_bg(&indexed.cell.bg) {
-                bg_grid[li][col] = Some(resolve_color(&indexed.cell.bg));
+            // Collect background color if non-default (after INVERSE swap).
+            let is_bg_default = if flags.contains(CellFlags::INVERSE) {
+                // After swapping, the "bg" is the original fg — always non-default.
+                false
+            } else {
+                is_default_bg(&indexed.cell.bg)
+            };
+            if !is_bg_default {
+                bg_grid[li][col] = Some(bg_color);
             }
         }
     }

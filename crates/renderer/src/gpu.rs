@@ -33,7 +33,7 @@ pub enum RenderError {
 const QUAD_SHADER: &str = r#"
 struct QuadInstance {
     @location(0) pos_size: vec4<f32>,  // xy = top-left position, zw = width/height
-    @location(1) color: vec4<f32>,     // rgba
+    @location(1) color: vec4<f32>,     // rgba (sRGB values)
 };
 
 struct VertexOutput {
@@ -42,6 +42,17 @@ struct VertexOutput {
 };
 
 @group(0) @binding(0) var<uniform> screen_size: vec2<f32>;
+
+// Convert a single sRGB component to linear space.
+// When rendering to an sRGB surface, the GPU converts linear -> sRGB on output,
+// so we must provide linear values to get correct final colors.
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        return c / 12.92;
+    } else {
+        return pow((c + 0.055) / 1.055, 2.4);
+    }
+}
 
 @vertex
 fn vs_main(
@@ -67,7 +78,13 @@ fn vs_main(
 
     var output: VertexOutput;
     output.position = vec4<f32>(ndc, 0.0, 1.0);
-    output.color = instance.color;
+    // Convert sRGB input to linear for correct rendering on sRGB surfaces.
+    output.color = vec4<f32>(
+        srgb_to_linear(instance.color.r),
+        srgb_to_linear(instance.color.g),
+        srgb_to_linear(instance.color.b),
+        instance.color.a,
+    );
     return output;
 }
 
@@ -166,6 +183,7 @@ impl GpuState {
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
+        log::debug!("Surface format: {:?} (sRGB={})", surface_format, surface_format.is_srgb());
 
         // Prefer pre-multiplied alpha for window transparency support.
         let alpha_mode = if renderer_config.opacity < 1.0 {
