@@ -14,5 +14,5 @@ pub use alacritty::AlacrittyBackend;
 pub use alacritty_terminal::vte::ansi::CursorShape as AlacCursorShape;
 pub use backend::TerminalBackend;
 pub use pane::{PaneLayout, PaneNode, PaneRect, SplitDirection};
-pub use pty::PtyHandle;
+pub use pty::{PtyHandle, WakeCallback};
 pub use tab::{Tab, TabManager};

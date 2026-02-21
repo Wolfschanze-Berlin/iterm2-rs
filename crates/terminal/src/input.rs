@@ -32,6 +32,7 @@ pub fn translate_key_event(event: &KeyEvent, modifiers: &ModifiersState) -> Opti
 fn translate_named(key: NamedKey, ctrl: bool, alt: bool, shift: bool) -> Option<Vec<u8>> {
     // Simple named keys (no modifier encoding).
     match key {
+        NamedKey::Space => return Some(vec![0x20]),
         NamedKey::Enter => return Some(vec![0x0D]),
         NamedKey::Backspace => return Some(vec![0x7F]),
         NamedKey::Tab => {
@@ -266,6 +267,12 @@ mod tests {
     }
 
     // ── Basic keys ──
+
+    #[test]
+    fn space_returns_0x20() {
+        let ev = named_event(NamedKey::Space);
+        assert_eq!(translate_key_event(&ev, &no_mods()), Some(vec![0x20]));
+    }
 
     #[test]
     fn enter_returns_cr() {

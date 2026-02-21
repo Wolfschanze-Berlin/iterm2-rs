@@ -5,13 +5,19 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread;
 
+/// A callback invoked by the PTY reader thread whenever new output arrives.
+/// Used to wake the event loop so it can process the data.
+pub type WakeCallback = Box<dyn Fn() + Send + 'static>;
+
 /// Manages a PTY connection to a shell process.
 pub struct PtyHandle {
     master_writer: Box<dyn Write + Send>,
-    master_pty: Box<dyn MasterPty + Send>,
+    master_pty: Option<Box<dyn MasterPty + Send>>,
     child: Box<dyn Child + Send + Sync>,
     output_rx: mpsc::Receiver<Vec<u8>>,
     reader_thread: Option<thread::JoinHandle<()>>,
+    /// Sender side kept for spawning new reader threads with wake callbacks.
+    output_tx: mpsc::Sender<Vec<u8>>,
 }
 
 impl PtyHandle {
@@ -47,11 +53,29 @@ impl PtyHandle {
         drop(pair.slave);
 
         let master_writer = pair.master.take_writer()?;
-        let mut reader = pair.master.try_clone_reader()?;
+        let reader = pair.master.try_clone_reader()?;
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
 
-        let reader_thread = thread::spawn(move || {
+        let reader_thread = Self::spawn_reader_thread(reader, tx.clone(), None);
+
+        Ok(Self {
+            master_writer,
+            master_pty: Some(pair.master),
+            child,
+            output_rx: rx,
+            reader_thread: Some(reader_thread),
+            output_tx: tx,
+        })
+    }
+
+    /// Spawn the background reader thread that drains the PTY into the channel.
+    fn spawn_reader_thread(
+        mut reader: Box<dyn Read + Send>,
+        tx: mpsc::Sender<Vec<u8>>,
+        wake: Option<WakeCallback>,
+    ) -> thread::JoinHandle<()> {
+        thread::spawn(move || {
             let mut buf = [0u8; 65536];
             loop {
                 match reader.read(&mut buf) {
@@ -60,6 +84,9 @@ impl PtyHandle {
                         if tx.send(buf[..n].to_vec()).is_err() {
                             break;
                         }
+                        if let Some(ref cb) = wake {
+                            cb();
+                        }
                     }
                     Err(e) => {
                         log::debug!("PTY reader error: {e}");
@@ -67,15 +94,29 @@ impl PtyHandle {
                     }
                 }
             }
-        });
-
-        Ok(Self {
-            master_writer,
-            master_pty: pair.master,
-            child,
-            output_rx: rx,
-            reader_thread: Some(reader_thread),
         })
+    }
+
+    /// Install a wake callback that the PTY reader thread calls after sending
+    /// new data. This is used to wake the event loop from sleep.
+    ///
+    /// NOTE: This replaces the reader thread. Call this early (before output
+    /// starts flowing) for best results — any data buffered in the old channel
+    /// is still available via `try_recv`.
+    pub fn set_wake_callback(&mut self, wake: WakeCallback) -> anyhow::Result<()> {
+        // We need a new reader from the master PTY.
+        let reader = self
+            .master_pty
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("PTY already closed"))?
+            .try_clone_reader()?;
+
+        self.reader_thread = Some(Self::spawn_reader_thread(
+            reader,
+            self.output_tx.clone(),
+            Some(wake),
+        ));
+        Ok(())
     }
 
     /// Write bytes to the PTY (keyboard input).
@@ -92,12 +133,14 @@ impl PtyHandle {
 
     /// Resize the PTY.
     pub fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
-        self.master_pty.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        if let Some(ref pty) = self.master_pty {
+            pty.resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })?;
+        }
         Ok(())
     }
 
@@ -109,31 +152,42 @@ impl PtyHandle {
 
 impl Drop for PtyHandle {
     fn drop(&mut self) {
-        // Graceful shutdown: drop the writer first to send EOF to the shell,
-        // then wait briefly for the child to exit on its own before killing.
-        // This avoids ConPTY cleanup crashes (0xcfffffff) on Windows.
+        // Graceful shutdown: send EOF, kill the child, close the PTY handle
+        // (which unblocks the reader thread), then join.
 
-        // Drop the writer to close the stdin pipe.
-        // (We can't drop master_writer directly since it's not Option,
-        //  but we can close it by writing an EOF / Ctrl+D.)
-        let _ = self.master_writer.write_all(&[0x04]); // Ctrl+D (EOF)
+        // Send EOF / Ctrl+D to the shell.
+        let _ = self.master_writer.write_all(&[0x04]);
         let _ = self.master_writer.flush();
 
         // Give the shell a moment to exit gracefully.
         for _ in 0..10 {
             match self.child.try_wait() {
-                Ok(Some(_)) => break, // Child exited cleanly.
+                Ok(Some(_)) => break,
                 _ => std::thread::sleep(std::time::Duration::from_millis(50)),
             }
         }
 
-        // Force kill only if still running.
+        // Force kill if still running.
         if matches!(self.child.try_wait(), Ok(None)) {
             let _ = self.child.kill();
         }
 
+        // Drop the master PTY handle BEFORE joining the reader thread.
+        // On Windows/ConPTY, closing the master handle is what unblocks
+        // the blocking read() in the reader thread.
+        drop(self.master_pty.take());
+
+        // Now the reader thread should unblock and exit.
         if let Some(handle) = self.reader_thread.take() {
-            let _ = handle.join();
+            // Use a parking_lot-style timed join: spawn a helper that
+            // waits for the reader, with a hard timeout to prevent hangs.
+            let (tx, rx) = mpsc::channel();
+            thread::spawn(move || {
+                let _ = handle.join();
+                let _ = tx.send(());
+            });
+            // Wait up to 2 seconds for the reader thread to finish.
+            let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
         }
     }
 }
