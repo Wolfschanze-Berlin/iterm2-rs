@@ -89,8 +89,8 @@ impl App {
         });
         if got_data {
             self.needs_redraw = true;
-        }
-        if self.needs_redraw {
+            // Only reset scroll to bottom when new PTY output arrives,
+            // not on every redraw (which would cancel user scrollback).
             if let Some(backend) = tab.active_backend_mut() {
                 backend.reset_scroll();
             }
@@ -552,6 +552,34 @@ impl ApplicationHandler<AppEvent> for App {
                                         break;
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Convert mouse wheel delta to scroll lines.
+                let lines = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_x, y) => {
+                        // Discrete scroll (mouse wheel notches): y is ±N lines.
+                        -(y as i32) * 3
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        // Smooth scroll (trackpad): convert pixels to lines.
+                        let line_height = self
+                            .gpu_state
+                            .as_ref()
+                            .map(|g| g.text.line_height())
+                            .unwrap_or(20.0);
+                        -(pos.y as f32 / line_height).round() as i32
+                    }
+                };
+                if lines != 0 {
+                    if let Some(tabs) = self.tabs.as_mut() {
+                        if let Some(tab) = tabs.active_mut() {
+                            if let Some(backend) = tab.active_backend_mut() {
+                                backend.scroll(lines);
+                                self.needs_redraw = true;
                             }
                         }
                     }
