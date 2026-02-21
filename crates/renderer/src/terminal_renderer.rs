@@ -162,6 +162,7 @@ fn is_default_bg(color: &Color) -> bool {
 /// Extract the visible terminal grid with styled cells, cursor, and bg rects.
 pub fn extract_grid(backend: &AlacrittyBackend) -> GridContent {
     let content = backend.renderable_content();
+    let display_offset = content.display_offset as i32;
 
     // Extract cursor info.
     let cursor = {
@@ -173,10 +174,10 @@ pub fn extract_grid(backend: &AlacrittyBackend) -> GridContent {
             AlacCursorShape::Beam => CursorShape::Beam,
             AlacCursorShape::Hidden => CursorShape::Hidden,
         };
-        let line = rc.point.line.0;
-        if shape != CursorShape::Hidden && line >= 0 {
+        let viewport_line = rc.point.line.0 + display_offset;
+        if shape != CursorShape::Hidden && viewport_line >= 0 {
             Some(CursorInfo {
-                line: line as usize,
+                line: viewport_line as usize,
                 col: rc.point.column.0,
                 shape,
             })
@@ -206,11 +207,11 @@ pub fn extract_grid(backend: &AlacrittyBackend) -> GridContent {
     let mut bg_grid: Vec<Vec<Option<(u8, u8, u8)>>> = vec![vec![None; cols]; rows];
 
     for indexed in content.display_iter {
-        let line = indexed.point.line.0;
+        let viewport_line = indexed.point.line.0 + display_offset;
         let col = indexed.point.column.0;
 
-        if line >= 0 && (line as usize) < rows && col < cols {
-            let li = line as usize;
+        if viewport_line >= 0 && (viewport_line as usize) < rows && col < cols {
+            let li = viewport_line as usize;
             let c = indexed.cell.c;
             let (r, g, b) = resolve_color(&indexed.cell.fg);
             let flags = indexed.cell.flags;
