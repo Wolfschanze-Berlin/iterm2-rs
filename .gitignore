@@ -5,3 +5,8 @@
 .env
 *.log
 .claude/settings.local.json
+
+# verrueckt-task
+.claude/*.local.md
+.claude/verrueckt-metadata.json
+.claude/worktrees

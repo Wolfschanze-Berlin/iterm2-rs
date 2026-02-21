@@ -9,7 +9,7 @@ linker = "rust-lld"
 # ── Build parallelism ────────────────────────────────────────────
 [build]
 jobs = 16                 # match logical CPU count (16 cores)
-rustc-wrapper = "sccache" # Use sccache for compilation caching
+rustc-wrapper = "sccache" # Disabled: sccache not installed in WSL2; 9p filesystem causes permission errors
 
 # ── Compilation cache ────────────────────────────────────────────
 # sccache caches compiled crates across builds — massive speedup on clean builds
