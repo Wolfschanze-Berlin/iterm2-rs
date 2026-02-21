@@ -67,27 +67,34 @@ pub struct GridContent {
 }
 
 // ---------------------------------------------------------------------------
-// Catppuccin Mocha palette
+// Catppuccin Mocha palette (with improved bright variants for readability)
+//
+// Normal colors use the official Catppuccin Mocha accent colors.
+// Bright variants use nearby Catppuccin palette colors where possible
+// to provide visual distinction. White/BrightWhite are boosted to the
+// Text color (#cdd6f4) for much better readability on the dark background.
 // ---------------------------------------------------------------------------
 
 fn named_color_to_rgb(named: &NamedColor) -> (u8, u8, u8) {
     match named {
-        NamedColor::Black => (0x45, 0x47, 0x5a),
-        NamedColor::Red => (0xf3, 0x8b, 0xa8),
-        NamedColor::Green => (0xa6, 0xe3, 0xa1),
-        NamedColor::Yellow => (0xf9, 0xe2, 0xaf),
-        NamedColor::Blue => (0x89, 0xb4, 0xfa),
-        NamedColor::Magenta => (0xf5, 0xc2, 0xe7),
-        NamedColor::Cyan => (0x94, 0xe2, 0xd5),
-        NamedColor::White => (0xba, 0xc2, 0xde),
-        NamedColor::BrightBlack => (0x58, 0x5b, 0x70),
-        NamedColor::BrightRed => (0xf3, 0x8b, 0xa8),
-        NamedColor::BrightGreen => (0xa6, 0xe3, 0xa1),
-        NamedColor::BrightYellow => (0xf9, 0xe2, 0xaf),
-        NamedColor::BrightBlue => (0x89, 0xb4, 0xfa),
-        NamedColor::BrightMagenta => (0xf5, 0xc2, 0xe7),
-        NamedColor::BrightCyan => (0x94, 0xe2, 0xd5),
-        NamedColor::BrightWhite => (0xa6, 0xad, 0xc8),
+        // Normal colors: official Catppuccin Mocha
+        NamedColor::Black => (0x45, 0x47, 0x5a),   // Surface1
+        NamedColor::Red => (0xf3, 0x8b, 0xa8),     // Red
+        NamedColor::Green => (0xa6, 0xe3, 0xa1),    // Green
+        NamedColor::Yellow => (0xf9, 0xe2, 0xaf),   // Yellow
+        NamedColor::Blue => (0x89, 0xb4, 0xfa),     // Blue
+        NamedColor::Magenta => (0xf5, 0xc2, 0xe7),  // Pink
+        NamedColor::Cyan => (0x94, 0xe2, 0xd5),     // Teal
+        NamedColor::White => (0xcd, 0xd6, 0xf4),    // Text (was Subtext1 #bac2de)
+        // Bright colors: use nearby palette colors for distinction
+        NamedColor::BrightBlack => (0x6c, 0x70, 0x86),   // Overlay0 (was Surface2 #585b70)
+        NamedColor::BrightRed => (0xeb, 0xa0, 0xac),     // Maroon
+        NamedColor::BrightGreen => (0xa6, 0xe3, 0xa1),   // Green (no lighter variant)
+        NamedColor::BrightYellow => (0xf9, 0xe2, 0xaf),  // Yellow (no lighter variant)
+        NamedColor::BrightBlue => (0xb4, 0xbe, 0xfe),    // Lavender
+        NamedColor::BrightMagenta => (0xcb, 0xa6, 0xf7), // Mauve
+        NamedColor::BrightCyan => (0x89, 0xdc, 0xeb),    // Sky
+        NamedColor::BrightWhite => (0xcd, 0xd6, 0xf4),   // Text (was Subtext0 #a6adc8)
         NamedColor::Foreground | NamedColor::BrightForeground => (0xcd, 0xd6, 0xf4),
         NamedColor::Background => (0x1e, 0x1e, 0x2e),
         NamedColor::Cursor => (0xf5, 0xe0, 0xdc),
