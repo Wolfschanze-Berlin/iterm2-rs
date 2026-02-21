@@ -4,3 +4,4 @@
 !tmux.exe
 .env
 *.log
+.claude/settings.local.json
