@@ -300,8 +300,11 @@ fn split_node_at(
     let is_target = matches!(node, PaneNode::Leaf { id, .. } if *id == target_id);
 
     if is_target {
-        // Use ptr::read/write to take ownership of the current node, build
-        // the Split, and write it back — no placeholder values needed.
+        // Safety: The code between `ptr::read` and `ptr::write` only constructs
+        // a `PaneNode::Split` from already-owned values (`old_leaf`, `new_leaf`,
+        // `direction`). No user-provided closures are called, no fallible
+        // operations occur, and none of the expressions can panic. Therefore the
+        // slot cannot be left in an invalid state.
         unsafe {
             let old_leaf = std::ptr::read(node);
             let split = PaneNode::Split {
@@ -387,18 +390,26 @@ fn remove_leaf_node(node: &mut PaneNode, target_id: usize) -> bool {
 /// replacement, and write that replacement back into `slot`.
 ///
 /// This avoids needing a "default" or "zeroed" PaneNode.
+///
+/// If `f` panics, the process is aborted to prevent undefined behaviour
+/// (the slot would otherwise be left in an invalid state because the old
+/// value has already been moved out via `ptr::read`).
 fn take_and_replace_with<F>(slot: &mut PaneNode, f: F)
 where
     F: FnOnce(PaneNode) -> PaneNode,
 {
-    // Safety: We're using `ptr::read` + `ptr::write` to move the value out
-    // of the mutable reference, transform it, and put a new value back.
-    // This is safe as long as `f` does not panic.  (If it does, the slot
-    // would be left in an invalid state, but we don't unwind here.)
     unsafe {
         let old = std::ptr::read(slot);
-        let new = f(old);
-        std::ptr::write(slot, new);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(old)));
+        match result {
+            Ok(new_val) => std::ptr::write(slot, new_val),
+            Err(_) => {
+                // `old` was moved into `f` which panicked, so the slot is now
+                // logically uninitialised. We cannot write a valid replacement
+                // (PaneNode has no Default). Aborting is the only safe option.
+                std::process::abort();
+            }
+        }
     }
 }
 
