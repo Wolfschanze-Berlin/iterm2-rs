@@ -10,3 +10,6 @@
 .claude/*.local.md
 .claude/verrueckt-metadata.json
 .claude/worktrees
+
+# Claude Code session exports (ephemeral session transcripts)
+.claude/export/
