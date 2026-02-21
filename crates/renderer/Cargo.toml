@@ -1,0 +1,15 @@
+[package]
+name = "renderer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu.workspace = true
+winit.workspace = true
+glyphon.workspace = true
+cosmic-text.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+log.workspace = true
+thiserror.workspace = true
+terminal = { path = "../terminal" }
