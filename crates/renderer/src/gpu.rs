@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use wgpu::util::DeviceExt;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
@@ -102,8 +101,11 @@ pub struct GpuState {
     quad_bind_group_layout: wgpu::BindGroupLayout,
     screen_size_buffer: wgpu::Buffer,
     screen_size_bind_group: wgpu::BindGroup,
-    /// Instance buffer for all quads (bg rects + cursor), re-created each frame.
+    /// Persistent instance buffer for quads. Reused across frames; only
+    /// re-allocated when the required capacity grows.
     quad_instance_buffer: Option<wgpu::Buffer>,
+    /// Allocated capacity of `quad_instance_buffer` in bytes.
+    quad_instance_buffer_capacity: u64,
     quad_instance_count: u32,
     /// Current cursor info for rendering.
     cursor_info: Option<CursorInfo>,
@@ -216,6 +218,7 @@ impl GpuState {
             screen_size_buffer,
             screen_size_bind_group,
             quad_instance_buffer: None,
+            quad_instance_buffer_capacity: 0,
             quad_instance_count: 0,
             cursor_info: None,
         })
@@ -359,18 +362,31 @@ impl GpuState {
         }
 
         if instances.is_empty() {
-            self.quad_instance_buffer = None;
             self.quad_instance_count = 0;
             return;
         }
 
-        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Quad Instance Buffer"),
-            contents: bytemuck::cast_slice(&instances),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let data = bytemuck::cast_slice(&instances);
+        let required = data.len() as u64;
 
-        self.quad_instance_buffer = Some(buffer);
+        // Reuse the existing buffer if it has enough capacity; otherwise allocate
+        // a new one with some headroom to avoid frequent re-allocations.
+        if required > self.quad_instance_buffer_capacity {
+            let alloc_size = required.next_power_of_two().max(1024);
+            let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Quad Instance Buffer"),
+                size: alloc_size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.quad_instance_buffer = Some(buffer);
+            self.quad_instance_buffer_capacity = alloc_size;
+        }
+
+        if let Some(ref buffer) = self.quad_instance_buffer {
+            self.queue.write_buffer(buffer, 0, data);
+        }
+
         self.quad_instance_count = instances.len() as u32;
     }
 

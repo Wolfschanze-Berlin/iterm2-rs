@@ -6,7 +6,7 @@ use anyhow::Result;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -28,12 +28,16 @@ pub struct App {
     renderer_config: RendererConfig,
     /// Cached character width in pixels (computed once after GPU init).
     char_width: f32,
+    /// Dirty flag: when true, the next `about_to_wait` will re-extract the grid
+    /// and request a GPU redraw. Set by PTY output, resize, scroll, and tab switches.
+    needs_redraw: bool,
+    /// Event loop proxy used by PTY reader threads to wake the event loop.
+    event_loop_proxy: EventLoopProxy<()>,
 }
 
 impl App {
-    /// Create a new `App` with the given renderer configuration.
-    /// The window is created in the `resumed` callback.
-    pub fn new(renderer_config: RendererConfig) -> Self {
+    /// Create a new `App` with the given renderer configuration and event loop proxy.
+    pub fn new(renderer_config: RendererConfig, proxy: EventLoopProxy<()>) -> Self {
         Self {
             window: None,
             gpu_state: None,
@@ -42,39 +46,42 @@ impl App {
             term_size: (80, 24),
             renderer_config,
             char_width: 0.0,
+            needs_redraw: true,
+            event_loop_proxy: proxy,
         }
     }
 
-    /// Drain PTY output from the active tab, feed it to the terminal backend,
-    /// and update the text renderer with the current grid content.
-    fn update_terminal(&mut self) {
+    /// Drain PTY output from the active tab and mark the app dirty if new data
+    /// arrived. The expensive grid extraction and GPU upload only happen when
+    /// `needs_redraw` is set.
+    fn poll_pty(&mut self) {
         let Some(tabs) = self.tabs.as_mut() else { return };
-        let Some(gpu) = self.gpu_state.as_mut() else { return };
         let Some(tab) = tabs.active_mut() else { return };
 
-        // Drain all available PTY output and snap scroll to bottom.
-        let mut received_output = false;
         while let Some(bytes) = tab.pty.try_recv() {
             tab.backend.process_bytes(&bytes);
-            received_output = true;
+            self.needs_redraw = true;
         }
-        if received_output {
+        if self.needs_redraw {
             tab.backend.reset_scroll();
         }
+    }
 
-        // Extract the full grid content: styled cells, cursor, and bg rects.
+    /// Re-extract the terminal grid and upload it to the GPU.
+    /// Only called when `needs_redraw` is true.
+    fn sync_grid_to_gpu(&mut self) {
+        let Some(tabs) = self.tabs.as_ref() else { return };
+        let Some(gpu) = self.gpu_state.as_mut() else { return };
+        let Some(tab) = tabs.active() else { return };
+
         let grid = terminal_renderer::extract_grid(&tab.backend);
 
         let w = gpu.size.width as f32;
         let h = gpu.size.height as f32;
 
-        // Update text with per-cell colors.
         gpu.text.set_styled_lines(&grid.styled_lines, w, h);
-
-        // Update cursor.
         gpu.set_cursor(grid.cursor);
 
-        // Update background rectangles + cursor quad.
         let line_height = gpu.text.line_height();
         gpu.set_backgrounds(&grid.bg_rects, self.char_width, line_height);
     }
@@ -115,21 +122,9 @@ impl App {
         }
     }
 
-    /// Force a full re-render of the active tab's content (e.g. after switching tabs).
+    /// Mark the display as needing a full re-render (e.g. after switching tabs).
     fn refresh_active_tab(&mut self) {
-        let Some(tabs) = self.tabs.as_ref() else { return };
-        let Some(gpu) = self.gpu_state.as_mut() else { return };
-        let Some(tab) = tabs.active() else { return };
-
-        let grid = terminal_renderer::extract_grid(&tab.backend);
-        let w = gpu.size.width as f32;
-        let h = gpu.size.height as f32;
-
-        gpu.text.set_styled_lines(&grid.styled_lines, w, h);
-        gpu.set_cursor(grid.cursor);
-
-        let line_height = gpu.text.line_height();
-        gpu.set_backgrounds(&grid.bg_rects, self.char_width, line_height);
+        self.needs_redraw = true;
     }
 
     /// Check if a key event is a tab management shortcut.
@@ -160,6 +155,13 @@ impl App {
                     match tabs.new_tab(cols, rows) {
                         Ok(id) => {
                             log::info!("New tab created (id={id})");
+                            // Install wake callback on the new tab's PTY.
+                            if let Some(tab) = tabs.active_mut() {
+                                let proxy = self.event_loop_proxy.clone();
+                                let _ = tab.pty.set_wake_callback(Box::new(move || {
+                                    let _ = proxy.send_event(());
+                                }));
+                            }
                             self.refresh_active_tab();
                         }
                         Err(e) => log::error!("Failed to create new tab: {e}"),
@@ -198,13 +200,14 @@ impl App {
     }
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self::new(RendererConfig::default())
-    }
-}
+// Note: App no longer implements Default because it requires an EventLoopProxy.
 
 impl ApplicationHandler for App {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        // PTY reader thread sent data — wake will be handled in about_to_wait.
+        // (The proxy wake already causes about_to_wait to run.)
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
@@ -259,6 +262,13 @@ impl ApplicationHandler for App {
         match tabs.new_tab(cols, rows) {
             Ok(_id) => {
                 log::info!("First tab created ({cols}x{rows})");
+                // Install wake callback so PTY output wakes the event loop.
+                if let Some(tab) = tabs.active_mut() {
+                    let proxy = self.event_loop_proxy.clone();
+                    let _ = tab.pty.set_wake_callback(Box::new(move || {
+                        let _ = proxy.send_event(());
+                    }));
+                }
             }
             Err(e) => {
                 log::error!("Failed to create first tab: {e}");
@@ -267,18 +277,8 @@ impl ApplicationHandler for App {
             }
         }
 
-        // Feed an initial render so the renderer has content.
-        if let Some(tab) = tabs.active() {
-            let grid = terminal_renderer::extract_grid(&tab.backend);
-            if let Some(gpu) = self.gpu_state.as_mut() {
-                let w = gpu.size.width as f32;
-                let h = gpu.size.height as f32;
-                gpu.text.set_styled_lines(&grid.styled_lines, w, h);
-                gpu.set_cursor(grid.cursor);
-                let line_height = gpu.text.line_height();
-                gpu.set_backgrounds(&grid.bg_rects, self.char_width, line_height);
-            }
-        }
+        // Mark dirty so the first about_to_wait renders initial content.
+        self.needs_redraw = true;
 
         self.tabs = Some(tabs);
         self.window = Some(window);
@@ -301,6 +301,7 @@ impl ApplicationHandler for App {
                 }
                 let (cols, rows) = self.compute_grid_size(physical_size.width, physical_size.height);
                 self.resize_all_tabs(cols, rows);
+                self.needs_redraw = true;
             }
             WindowEvent::ScaleFactorChanged { .. } => {
                 if let Some(window) = self.window.as_ref() {
@@ -359,6 +360,7 @@ impl ApplicationHandler for App {
                         _ => false,
                     };
                     if handled {
+                        self.needs_redraw = true;
                         return;
                     }
                 }
@@ -407,12 +409,22 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        self.update_terminal();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Drain PTY output; this sets `needs_redraw` if new bytes arrived.
+        self.poll_pty();
 
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+        if self.needs_redraw {
+            self.sync_grid_to_gpu();
+            self.needs_redraw = false;
+
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
         }
+
+        // Sleep until the next event (PTY wake, key press, resize, etc.).
+        // The PTY reader thread wakes us via EventLoopProxy::send_event.
+        event_loop.set_control_flow(ControlFlow::Wait);
     }
 }
 
@@ -425,7 +437,8 @@ pub fn create_event_loop() -> Result<EventLoop<()>> {
 /// Convenience: create event loop, app, and run with the given config.
 pub fn run(renderer_config: RendererConfig) -> Result<()> {
     let event_loop = create_event_loop()?;
-    let mut app = App::new(renderer_config);
+    let proxy = event_loop.create_proxy();
+    let mut app = App::new(renderer_config, proxy);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
