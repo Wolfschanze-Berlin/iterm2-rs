@@ -12,7 +12,8 @@ use winit::window::{Window, WindowAttributes, WindowId};
 
 use terminal::TerminalBackend;
 
-use crate::gpu::GpuState;
+use crate::config::RendererConfig;
+use crate::gpu::{GpuState, RenderError};
 use crate::terminal_renderer;
 
 /// Application state that holds the window, GPU renderer, and tab manager.
@@ -21,17 +22,26 @@ pub struct App {
     gpu_state: Option<GpuState>,
     tabs: Option<terminal::TabManager>,
     modifiers: ModifiersState,
+    /// Current terminal grid size in cells (cols, rows).
+    term_size: (u16, u16),
+    /// Renderer configuration (font, colors, window).
+    renderer_config: RendererConfig,
+    /// Cached character width in pixels (computed once after GPU init).
+    char_width: f32,
 }
 
 impl App {
-    /// Create a new `App` with no window or GPU state yet.
+    /// Create a new `App` with the given renderer configuration.
     /// The window is created in the `resumed` callback.
-    pub fn new() -> Self {
+    pub fn new(renderer_config: RendererConfig) -> Self {
         Self {
             window: None,
             gpu_state: None,
             tabs: None,
             modifiers: ModifiersState::empty(),
+            term_size: (80, 24),
+            renderer_config,
+            char_width: 0.0,
         }
     }
 
@@ -42,17 +52,67 @@ impl App {
         let Some(gpu) = self.gpu_state.as_mut() else { return };
         let Some(tab) = tabs.active_mut() else { return };
 
-        // Drain all available PTY output.
+        // Drain all available PTY output and snap scroll to bottom.
+        let mut received_output = false;
         while let Some(bytes) = tab.pty.try_recv() {
             tab.backend.process_bytes(&bytes);
+            received_output = true;
+        }
+        if received_output {
+            tab.backend.reset_scroll();
         }
 
-        // Always re-render the grid — the shell may update the current line
-        // (e.g. history navigation, tab completion) and we need to show it.
-        let lines = terminal_renderer::extract_grid_text(&tab.backend);
+        // Extract the full grid content: styled cells, cursor, and bg rects.
+        let grid = terminal_renderer::extract_grid(&tab.backend);
+
         let w = gpu.size.width as f32;
         let h = gpu.size.height as f32;
-        gpu.text.set_lines(&lines, w, h);
+
+        // Update text with per-cell colors.
+        gpu.text.set_styled_lines(&grid.styled_lines, w, h);
+
+        // Update cursor.
+        gpu.set_cursor(grid.cursor);
+
+        // Update background rectangles + cursor quad.
+        let line_height = gpu.text.line_height();
+        gpu.set_backgrounds(&grid.bg_rects, self.char_width, line_height);
+    }
+
+    /// Compute terminal grid size (cols, rows) from pixel dimensions and font metrics.
+    fn compute_grid_size(&self, width: u32, height: u32) -> (u16, u16) {
+        let Some(gpu) = self.gpu_state.as_ref() else {
+            return self.term_size;
+        };
+        let char_width = if self.char_width > 0.0 {
+            self.char_width
+        } else {
+            gpu.text.font_size() * 0.6
+        };
+        let line_height = gpu.text.line_height();
+        // Subtract a small padding (4px each side)
+        let usable_w = (width as f32 - 8.0).max(1.0);
+        let usable_h = (height as f32 - 8.0).max(1.0);
+        let cols = (usable_w / char_width).floor() as u16;
+        let rows = (usable_h / line_height).floor() as u16;
+        (cols.max(10), rows.max(2))
+    }
+
+    /// Resize all tabs' backends and PTYs to match new dimensions.
+    fn resize_all_tabs(&mut self, cols: u16, rows: u16) {
+        if cols == self.term_size.0 && rows == self.term_size.1 {
+            return;
+        }
+        self.term_size = (cols, rows);
+        log::info!("Terminal resized to {cols}x{rows}");
+        if let Some(tabs) = self.tabs.as_mut() {
+            for tab in tabs.iter_mut() {
+                tab.backend.resize(cols, rows);
+                if let Err(e) = tab.pty.resize(cols, rows) {
+                    log::warn!("Failed to resize PTY: {e}");
+                }
+            }
+        }
     }
 
     /// Force a full re-render of the active tab's content (e.g. after switching tabs).
@@ -61,10 +121,15 @@ impl App {
         let Some(gpu) = self.gpu_state.as_mut() else { return };
         let Some(tab) = tabs.active() else { return };
 
-        let lines = terminal_renderer::extract_grid_text(&tab.backend);
+        let grid = terminal_renderer::extract_grid(&tab.backend);
         let w = gpu.size.width as f32;
         let h = gpu.size.height as f32;
-        gpu.text.set_lines(&lines, w, h);
+
+        gpu.text.set_styled_lines(&grid.styled_lines, w, h);
+        gpu.set_cursor(grid.cursor);
+
+        let line_height = gpu.text.line_height();
+        gpu.set_backgrounds(&grid.bg_rects, self.char_width, line_height);
     }
 
     /// Check if a key event is a tab management shortcut.
@@ -91,7 +156,8 @@ impl App {
             // Ctrl+Shift+T => new tab
             Key::Character(c) if shift && (c.as_ref() == "T" || c.as_ref() == "t") => {
                 if let Some(tabs) = self.tabs.as_mut() {
-                    match tabs.new_tab(80, 24) {
+                    let (cols, rows) = self.term_size;
+                    match tabs.new_tab(cols, rows) {
                         Ok(id) => {
                             log::info!("New tab created (id={id})");
                             self.refresh_active_tab();
@@ -134,20 +200,22 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        Self::new()
+        Self::new(RendererConfig::default())
     }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
-            // Already created; this can happen on some platforms.
             return;
         }
 
         let attrs = WindowAttributes::default()
-            .with_title("iterm2-rs")
-            .with_inner_size(LogicalSize::new(800.0, 600.0))
+            .with_title(&self.renderer_config.window_title)
+            .with_inner_size(LogicalSize::new(
+                self.renderer_config.window_width as f64,
+                self.renderer_config.window_height as f64,
+            ))
             .with_min_inner_size(LogicalSize::new(400.0, 300.0))
             .with_resizable(true);
 
@@ -167,9 +235,12 @@ impl ApplicationHandler for App {
         );
 
         // Initialize wgpu (blocking on async).
-        match pollster::block_on(GpuState::new(window.clone())) {
-            Ok(gpu) => {
+        match pollster::block_on(GpuState::new(window.clone(), &self.renderer_config)) {
+            Ok(mut gpu) => {
                 log::info!("GPU initialized successfully");
+                // Compute and cache character width.
+                self.char_width = gpu.text.char_width();
+                log::info!("Measured char_width={:.1}px", self.char_width);
                 self.gpu_state = Some(gpu);
             }
             Err(e) => {
@@ -179,9 +250,10 @@ impl ApplicationHandler for App {
             }
         }
 
-        // Create tab manager and spawn the first tab.
-        let cols: u16 = 80;
-        let rows: u16 = 24;
+        // Compute terminal grid size from actual window dimensions.
+        let inner = window.inner_size();
+        let (cols, rows) = self.compute_grid_size(inner.width, inner.height);
+        self.term_size = (cols, rows);
         let mut tabs = terminal::TabManager::new();
 
         match tabs.new_tab(cols, rows) {
@@ -195,13 +267,16 @@ impl ApplicationHandler for App {
             }
         }
 
-        // Feed an initial empty update so the renderer has content.
+        // Feed an initial render so the renderer has content.
         if let Some(tab) = tabs.active() {
-            let lines = terminal_renderer::extract_grid_text(&tab.backend);
+            let grid = terminal_renderer::extract_grid(&tab.backend);
             if let Some(gpu) = self.gpu_state.as_mut() {
                 let w = gpu.size.width as f32;
                 let h = gpu.size.height as f32;
-                gpu.text.set_lines(&lines, w, h);
+                gpu.text.set_styled_lines(&grid.styled_lines, w, h);
+                gpu.set_cursor(grid.cursor);
+                let line_height = gpu.text.line_height();
+                gpu.set_backgrounds(&grid.bg_rects, self.char_width, line_height);
             }
         }
 
@@ -224,10 +299,10 @@ impl ApplicationHandler for App {
                 if let Some(gpu) = self.gpu_state.as_mut() {
                     gpu.resize(physical_size);
                 }
-                // TODO: Resize terminal/PTY to match new window dimensions.
+                let (cols, rows) = self.compute_grid_size(physical_size.width, physical_size.height);
+                self.resize_all_tabs(cols, rows);
             }
             WindowEvent::ScaleFactorChanged { .. } => {
-                // The new inner size is applied via the subsequent Resized event.
                 if let Some(window) = self.window.as_ref() {
                     log::debug!("Scale factor changed to {}", window.scale_factor());
                 }
@@ -236,12 +311,58 @@ impl ApplicationHandler for App {
                 self.modifiers = new_modifiers.state();
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                // Check for tab management shortcuts first.
                 if self.handle_tab_shortcut(&event, event_loop) {
                     return;
                 }
 
-                // Otherwise, forward to the active tab's PTY.
+                // Check for scroll shortcuts (Shift + PageUp/Down/Home/End).
+                if event.state == winit::event::ElementState::Pressed
+                    && self.modifiers.shift_key()
+                {
+                    let handled = match &event.logical_key {
+                        Key::Named(NamedKey::PageUp) => {
+                            if let Some(tabs) = self.tabs.as_mut() {
+                                if let Some(tab) = tabs.active_mut() {
+                                    let (_cols, rows) = tab.backend.size();
+                                    let page_size = (rows as i32).saturating_sub(2).max(1);
+                                    tab.backend.scroll(-page_size);
+                                }
+                            }
+                            true
+                        }
+                        Key::Named(NamedKey::PageDown) => {
+                            if let Some(tabs) = self.tabs.as_mut() {
+                                if let Some(tab) = tabs.active_mut() {
+                                    let (_cols, rows) = tab.backend.size();
+                                    let page_size = (rows as i32).saturating_sub(2).max(1);
+                                    tab.backend.scroll(page_size);
+                                }
+                            }
+                            true
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            if let Some(tabs) = self.tabs.as_mut() {
+                                if let Some(tab) = tabs.active_mut() {
+                                    tab.backend.scroll(i32::MIN / 2);
+                                }
+                            }
+                            true
+                        }
+                        Key::Named(NamedKey::End) => {
+                            if let Some(tabs) = self.tabs.as_mut() {
+                                if let Some(tab) = tabs.active_mut() {
+                                    tab.backend.reset_scroll();
+                                }
+                            }
+                            true
+                        }
+                        _ => false,
+                    };
+                    if handled {
+                        return;
+                    }
+                }
+
                 if let Some(bytes) =
                     terminal::input::translate_key_event(&event, &self.modifiers)
                 {
@@ -258,13 +379,26 @@ impl ApplicationHandler for App {
                 if let Some(gpu) = self.gpu_state.as_mut() {
                     match gpu.render() {
                         Ok(()) => {}
-                        Err(e) => {
-                            // If we get a surface error, try to reconfigure.
-                            log::warn!("Render error: {e}");
+                        Err(RenderError::Surface(
+                            wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated,
+                        )) => {
+                            log::debug!("Surface lost/outdated, reconfiguring");
                             if let Some(window) = self.window.as_ref() {
-                                let size = window.inner_size();
-                                gpu.resize(size);
+                                gpu.resize(window.inner_size());
                             }
+                        }
+                        Err(RenderError::Surface(wgpu::SurfaceError::Timeout)) => {
+                            log::warn!("Surface timeout, skipping frame");
+                        }
+                        Err(RenderError::Surface(wgpu::SurfaceError::OutOfMemory)) => {
+                            log::error!("GPU out of memory, exiting");
+                            event_loop.exit();
+                        }
+                        Err(RenderError::Surface(other)) => {
+                            log::error!("Surface error: {other}");
+                        }
+                        Err(RenderError::Other(e)) => {
+                            log::error!("Render error: {e}");
                         }
                     }
                 }
@@ -274,10 +408,8 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Drain PTY output and update terminal content.
         self.update_terminal();
 
-        // Request a redraw every frame so we keep rendering.
         if let Some(window) = self.window.as_ref() {
             window.request_redraw();
         }
@@ -290,10 +422,10 @@ pub fn create_event_loop() -> Result<EventLoop<()>> {
     Ok(event_loop)
 }
 
-/// Convenience: create event loop, app, and run. This is the simplest entry point.
-pub fn run() -> Result<()> {
+/// Convenience: create event loop, app, and run with the given config.
+pub fn run(renderer_config: RendererConfig) -> Result<()> {
     let event_loop = create_event_loop()?;
-    let mut app = App::new();
+    let mut app = App::new(renderer_config);
     event_loop.run_app(&mut app)?;
     Ok(())
 }

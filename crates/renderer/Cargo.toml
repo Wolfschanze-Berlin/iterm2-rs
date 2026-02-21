@@ -12,4 +12,6 @@ pollster.workspace = true
 anyhow.workspace = true
 log.workspace = true
 thiserror.workspace = true
+bytemuck.workspace = true
+alacritty_terminal.workspace = true
 terminal = { path = "../terminal" }

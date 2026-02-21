@@ -41,6 +41,9 @@ env_logger = "0.11"
 # Async runtime (blocking on wgpu async init)
 pollster = "0.4"
 
+# Byte casting for GPU buffers
+bytemuck = { version = "1", features = ["derive"] }
+
 # Error handling
 anyhow = "1"
 thiserror = "2"
