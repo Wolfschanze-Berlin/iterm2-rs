@@ -124,6 +124,11 @@ impl TabManager {
         self.active_index
     }
 
+    /// Iterate over all tabs mutably (for resize operations).
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Tab> {
+        self.tabs.iter_mut()
+    }
+
     /// Get tab titles for display.
     /// Returns (id, title, is_active) for each tab.
     pub fn tab_titles(&self) -> Vec<(usize, &str, bool)> {

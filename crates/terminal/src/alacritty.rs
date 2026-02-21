@@ -3,7 +3,7 @@
 //! Wraps `alacritty_terminal::Term` behind the `TerminalBackend` trait.
 
 use alacritty_terminal::event::{Event, EventListener};
-use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::term::Config;
 use alacritty_terminal::vte::ansi::Processor;
 use alacritty_terminal::Term;
@@ -89,5 +89,13 @@ impl TerminalBackend for AlacrittyBackend {
             screen_lines: rows as usize,
         };
         self.term.resize(size);
+    }
+
+    fn scroll(&mut self, delta: i32) {
+        self.term.scroll_display(Scroll::Delta(delta));
+    }
+
+    fn reset_scroll(&mut self) {
+        self.term.scroll_display(Scroll::Bottom);
     }
 }

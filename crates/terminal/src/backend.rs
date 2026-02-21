@@ -10,4 +10,10 @@ pub trait TerminalBackend {
 
     /// Resize the terminal
     fn resize(&mut self, cols: u16, rows: u16);
+
+    /// Scroll the viewport by `delta` lines (negative = up, positive = down).
+    fn scroll(&mut self, delta: i32);
+
+    /// Reset the scroll position to the bottom of the terminal (live output).
+    fn reset_scroll(&mut self);
 }
